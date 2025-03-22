@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  llm-api:
+    build:
+      context: ./LLMManager  # Points to the directory containing your Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./LLMManager/models:/app/models
+      - ./data:/app/data  # Assuming your data directory is at ~/test_llm/data
+    environment:
+      - MODEL_DIR=/app/models
+      - DATA_DIR=/app/data
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    shm_size: 1gb
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 1G
+    command: >
+      bash -c "
+        python app.py & 
+        sleep 10 && 
+        ./initialize_models.sh && 
+        wait
+      "

@@ -1,0 +1,19 @@
+flask==2.3.3
+gunicorn==21.2.0
+pydantic==2.4.2
+# LLM libraries
+llama-cpp-python==0.2.56
+transformers==4.34.0
+accelerate==0.23.0
+bitsandbytes==0.41.1
+sentencepiece==0.1.99
+protobuf==4.24.4
+# RWKV support
+rwkv==0.8.7
+tokenizers==0.14.1
+# For English language detection and verification
+langdetect==1.0.9
+# Utilities
+numpy==1.24.4
+torch==2.0.1
+tqdm==4.66.1
