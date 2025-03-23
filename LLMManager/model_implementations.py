@@ -3,7 +3,6 @@ import logging
 import torch
 from typing import List, Dict
 
-# Configure more detailed logging
 logging.basicConfig(level=logging.DEBUG,
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ class LLMInterface:
     
     def get_model_size(self) -> float:
         """Get the size of the model in MB"""
-        return 0.0  # Default implementation
+        return 0.0  
 
 class Phi2Model(LLMInterface):
     """Microsoft's Phi-2 model implementation using Transformers"""
@@ -27,14 +26,14 @@ class Phi2Model(LLMInterface):
         
         logger.info(f"Initializing Phi2Model with path: {model_path}")
         try:
-            # Check if the model path is a local GGUF file or a Hugging Face model ID
+            
             is_local_file = os.path.exists(model_path) and model_path.endswith('.gguf')
             logger.debug(f"Is local file: {is_local_file}")
 
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(f"Using device: {self.device}")
             
-            # Different loading logic for GGUF vs Hugging Face models
+            
             if is_local_file:
                 logger.debug("Loading from local GGUF file")
                 from llama_cpp import Llama
@@ -56,10 +55,10 @@ class Phi2Model(LLMInterface):
             else:
                 logger.debug("Loading from Hugging Face model ID")
                 try:
-                    # Load in 4-bit quantization for reduced memory footprint
+                    
                     self.tokenizer = AutoTokenizer.from_pretrained(model_path)
                     
-                    # Load in 4-bit to stay under 400MB
+                    
                     self.model = AutoModelForCausalLM.from_pretrained(
                         model_path,
                         load_in_4bit=True,
@@ -71,7 +70,7 @@ class Phi2Model(LLMInterface):
                     logger.error(f"Failed to load from Hugging Face: {hf_err}")
                     raise
             
-            # Check model size
+            
             model_size = self.get_model_size()
             logger.info(f"Loaded Phi2 model with size: {model_size:.2f} MB")
             
@@ -85,10 +84,10 @@ class Phi2Model(LLMInterface):
         """Get the size of the model in MB"""
         if hasattr(self, 'is_llama_cpp') and self.is_llama_cpp:
             if hasattr(self, 'model_path') and os.path.exists(self.model_path):
-                return os.path.getsize(self.model_path) / (1024 * 1024)  # Convert to MB
+                return os.path.getsize(self.model_path) / (1024 * 1024)  
         elif hasattr(self, 'model'):
             model_size_bytes = sum(p.numel() * p.element_size() for p in self.model.parameters())
-            return model_size_bytes / (1024 * 1024)  # Convert to MB
+            return model_size_bytes / (1024 * 1024)  
         return 0.0
     
     def generate(self, conversation_history: List[Dict[str, str]]) -> str:
@@ -96,7 +95,7 @@ class Phi2Model(LLMInterface):
         
         try:
             if hasattr(self, 'is_llama_cpp') and self.is_llama_cpp:
-                # Use llama_cpp generation for GGUF files
+                
                 prompt = self._format_phi2_prompt(conversation_history)
                 logger.debug(f"Using prompt for llama_cpp: {prompt[:100]}...")
                 
@@ -116,7 +115,7 @@ class Phi2Model(LLMInterface):
                     response = str(output)
                 
             else:
-                # Format conversation history for Phi-2
+                
                 prompt = self._format_phi2_prompt(conversation_history)
                 logger.debug(f"Using prompt for Hugging Face: {prompt[:100]}...")
                 
@@ -135,7 +134,7 @@ class Phi2Model(LLMInterface):
                     skip_special_tokens=True
                 )
             
-            # Ensure response is in English
+            
             if not self._is_english(response):
                 logger.warning("Non-English response detected, falling back to English")
                 response = "I apologize, but I can only respond in English. " + \
@@ -163,18 +162,17 @@ class Phi2Model(LLMInterface):
     
     def _is_english(self, text: str) -> bool:
         """Simple check to detect if text is primarily English"""
-        # This is a basic implementation - could be enhanced with language detection libraries
+        
         non_english_chars = 0
         total_chars = max(1, len(text.strip()))
         
         for char in text:
-            # Check if character is outside basic Latin alphabet range
+            
             if char.isalpha() and ord(char) > 127:
                 non_english_chars += 1
         
-        # If more than 15% non-Latin chars, likely not English
+        
         return (non_english_chars / total_chars) < 0.15
-
 
 class TinyLlamaModel(LLMInterface):
     """TinyLlama 1.1B implementation using llama.cpp"""
@@ -183,15 +181,15 @@ class TinyLlamaModel(LLMInterface):
         from llama_cpp import Llama
         logger.info(f"Initializing TinyLlamaModel with path: {model_path}")
         try:
-            # Use 4-bit quantization for reduced memory footprint
+            
             self.model = Llama(
                 model_path=model_path,
-                n_ctx=2048,       # Context window size
-                n_threads=4,      # Number of threads to use
-                n_gpu_layers=0    # CPU only by default, adjust as needed
+                n_ctx=2048,       
+                n_threads=4,      
+                n_gpu_layers=0    
             )
             
-            # Get model size from file
+            
             self.model_path = model_path
             model_size = self.get_model_size()
             logger.info(f"Loaded TinyLlama model with size: {model_size:.2f} MB")
@@ -205,11 +203,11 @@ class TinyLlamaModel(LLMInterface):
     def get_model_size(self) -> float:
         """Get the size of the model in MB from file size"""
         if hasattr(self, 'model_path') and os.path.exists(self.model_path):
-            return os.path.getsize(self.model_path) / (1024 * 1024)  # Convert to MB
+            return os.path.getsize(self.model_path) / (1024 * 1024)  
         return 0.0
     
     def generate(self, conversation_history: List[Dict[str, str]]) -> str:
-        # Format conversation history for TinyLlama
+        
         prompt = self._format_tinyllama_prompt(conversation_history)
         
         logger.info("Generating response with TinyLlamaModel")
@@ -229,7 +227,7 @@ class TinyLlamaModel(LLMInterface):
             else:
                 response = str(output)
             
-            # Ensure response is in English
+            
             if not self._is_english(response):
                 logger.warning("Non-English response detected, falling back to English")
                 response = "I apologize, but I can only respond in English. " + \
@@ -258,18 +256,17 @@ class TinyLlamaModel(LLMInterface):
     
     def _is_english(self, text: str) -> bool:
         """Simple check to detect if text is primarily English"""
-        # This is a basic implementation - could be enhanced with language detection libraries
+        
         non_english_chars = 0
         total_chars = max(1, len(text.strip()))
         
         for char in text:
-            # Check if character is outside basic Latin alphabet range
+            
             if char.isalpha() and ord(char) > 127:
                 non_english_chars += 1
         
-        # If more than 15% non-Latin chars, likely not English
+        
         return (non_english_chars / total_chars) < 0.15
-
 
 class RWKVModel(LLMInterface):
     """RWKV model implementation - RNN with transformer-level performance"""
@@ -277,7 +274,7 @@ class RWKVModel(LLMInterface):
     def __init__(self, model_path: str):
         logger.info(f"Initializing RWKVModel with path: {model_path}")
         try:
-            # Try to import needed modules for RWKV
+            
             try:
                 import rwkv
                 from rwkv.model import RWKV
@@ -287,7 +284,7 @@ class RWKVModel(LLMInterface):
                 logger.warning("RWKV package not available. Will use llama.cpp for RWKV GGUF files.")
                 self.rwkv_available = False
             
-            # Check if this is a GGUF file
+            
             is_gguf = model_path.lower().endswith('.gguf')
             
             if is_gguf:
@@ -307,7 +304,7 @@ class RWKVModel(LLMInterface):
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
                 logger.info(f"Using device: {self.device}")
                 
-                # Initialize RWKV model
+                
                 import rwkv
                 from rwkv.model import RWKV
                 from rwkv.utils import PIPELINE
@@ -319,7 +316,7 @@ class RWKVModel(LLMInterface):
             else:
                 raise ImportError("RWKV package not available and model is not in GGUF format")
             
-            # Get model size from file
+            
             model_size = self.get_model_size()
             logger.info(f"Loaded RWKV model with size: {model_size:.2f} MB")
             
@@ -332,11 +329,11 @@ class RWKVModel(LLMInterface):
     def get_model_size(self) -> float:
         """Get the size of the model in MB from file size"""
         if hasattr(self, 'model_path') and os.path.exists(self.model_path):
-            return os.path.getsize(self.model_path) / (1024 * 1024)  # Convert to MB
+            return os.path.getsize(self.model_path) / (1024 * 1024)  
         return 0.0
     
     def generate(self, conversation_history: List[Dict[str, str]]) -> str:
-        # Format conversation history for RWKV
+        
         prompt = self._format_rwkv_prompt(conversation_history)
         
         logger.info("Generating response with RWKVModel")
@@ -357,24 +354,24 @@ class RWKVModel(LLMInterface):
                 else:
                     response = str(output)
             else:
-                # Initialize state
+                
                 state = None
                 
-                # Process prompt to get state
+                
                 for i in range(0, len(prompt), 64):
                     chunk = prompt[i:i+64]
                     output, state = self.pipeline.forward(chunk, state)
                 
-                # Generate response
+                
                 response = ""
-                for _ in range(256):  # Generate up to 256 tokens
+                for _ in range(256):  
                     output, state = self.pipeline.forward("\n", state)
                     token = self.pipeline.sample_logits(output, temperature=0.7)
                     if token == '\n\n':
                         break
                     response += token
             
-            # Ensure response is in English
+            
             if not self._is_english(response):
                 logger.warning("Non-English response detected, falling back to English")
                 response = "I apologize, but I can only respond in English. " + \
@@ -402,14 +399,14 @@ class RWKVModel(LLMInterface):
     
     def _is_english(self, text: str) -> bool:
         """Simple check to detect if text is primarily English"""
-        # This is a basic implementation - could be enhanced with language detection libraries
+        
         non_english_chars = 0
         total_chars = max(1, len(text.strip()))
         
         for char in text:
-            # Check if character is outside basic Latin alphabet range
+            
             if char.isalpha() and ord(char) > 127:
                 non_english_chars += 1
         
-        # If more than 15% non-Latin chars, likely not English
+        
         return (non_english_chars / total_chars) < 0.15

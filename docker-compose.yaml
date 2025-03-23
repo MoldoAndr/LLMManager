@@ -3,12 +3,12 @@ version: '3.8'
 services:
   llm-api:
     build:
-      context: ./LLMManager  # Points to the directory containing your Dockerfile
+      context: ./LLMManager
     ports:
       - "5000:5000"
     volumes:
       - ./LLMManager/models:/app/models
-      - ./data:/app/data  # Assuming your data directory is at ~/test_llm/data
+      - ./data:/app/data
     environment:
       - MODEL_DIR=/app/models
       - DATA_DIR=/app/data
@@ -24,7 +24,7 @@ services:
     command: >
       bash -c "
         python app.py & 
-        sleep 10 && 
+        sleep 6 && 
         ./initialize_models.sh && 
         wait
       "
