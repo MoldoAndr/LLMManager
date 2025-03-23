@@ -1,10 +1,11 @@
 import os
 import logging
+import requests
 from typing import Dict, List, Any, Optional
 from flask import Flask, request, jsonify
 
 # Import model implementations
-from model_implementations import LLMInterface, TinyLlamaModel, Phi2Model
+from model_implementations import LLMInterface, TinyLlamaModel, Phi2Model, RWKVModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -23,6 +24,26 @@ class LLMConversationManager:
         """Add a model to the manager"""
         logger.info(f"Adding model: {model_id}")
         self.models[model_id] = model_instance
+    
+    def remove_model(self, model_id: str) -> bool:
+        """Remove a model from the manager"""
+        if model_id not in self.models:
+            return False
+        
+        logger.info(f"Removing model: {model_id}")
+        # First, close any active conversations with this model
+        conv_to_remove = []
+        for conv_id, conv_data in self.conversations.items():
+            if conv_data["model_id"] == model_id:
+                conv_to_remove.append(conv_id)
+        
+        for conv_id in conv_to_remove:
+            del self.conversations[conv_id]
+            logger.info(f"Removed conversation {conv_id} associated with model {model_id}")
+        
+        # Remove the model itself
+        del self.models[model_id]
+        return True
     
     def create_conversation(self, model_id: str, conversation_id: Optional[str] = None) -> str:
         """Create a new conversation with a specific model"""
@@ -159,8 +180,101 @@ def load_model(model_type, **kwargs):
             logger.error("transformers not installed, cannot load phi2 models")
             raise
     
+    if model_type.lower() == "rwkv":
+        try:
+            model_path = kwargs.get("model_path")
+            if not model_path:
+                raise ValueError("model_path is required for RWKV models")
+            return RWKVModel(model_path=model_path)
+        except ImportError:
+            logger.error("RWKV not installed, cannot load RWKV models")
+            raise
+    
     logger.error(f"Unknown model type: {model_type}")
     raise ValueError(f"Unknown model type: {model_type}")
+
+# Function to analyze a GGUF file to check compatibility
+def analyze_gguf_file(file_path):
+    """Extract metadata from a GGUF file to check compatibility"""
+    try:
+        import struct
+        import json
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return {"error": "File not found"}
+            
+        with open(file_path, 'rb') as f:
+            # GGUF magic number
+            magic = f.read(4)
+            if magic != b'GGUF':
+                return {"error": "Not a valid GGUF file (missing GGUF magic)"}
+                
+            # Read version
+            version = struct.unpack('<I', f.read(4))[0]
+            
+            # This is a simplified check - real GGUF parsing is more complex
+            metadata = {
+                "file_size_mb": os.path.getsize(file_path) / (1024 * 1024),
+                "gguf_version": version
+            }
+            
+            # Try to detect architecture - this is simplified
+            # Read a bit more to find architecture info
+            f.seek(0)
+            sample = f.read(8192).decode('utf-8', errors='ignore')
+            
+            # Look for known architectures in the binary data
+            for arch in ["llama", "falcon", "mpt", "gpt2", "gptj", "gpt_neox", "phi", "rwkv", "exaone"]:
+                if arch in sample.lower():
+                    metadata["detected_architecture"] = arch
+                    break
+            
+            return metadata
+            
+    except Exception as e:
+        return {"error": f"Error analyzing GGUF file: {e}"}
+
+# Function to download a GGUF file from a URL
+def download_gguf_model(url, save_path):
+    """Download a GGUF model from a URL to the specified path"""
+    try:
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        # Download with progress reporting
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        # Get the total file size if available
+        total_size = int(response.headers.get('content-length', 0))
+        
+        # Log download information
+        logger.info(f"Downloading model from {url} to {save_path}")
+        if total_size:
+            logger.info(f"Total size: {total_size / (1024 * 1024):.2f} MB")
+        
+        # Write the file
+        with open(save_path, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    
+                    # Log progress for large files
+                    if total_size > 0 and downloaded % (100 * 1024 * 1024) < 8192:  # Log every 100MB
+                        progress = (downloaded / total_size) * 100
+                        logger.info(f"Downloaded: {downloaded / (1024 * 1024):.2f} MB ({progress:.2f}%)")
+        
+        logger.info(f"Model download complete: {save_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error downloading model: {e}")
+        # Clean up partial download if it exists
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        return False
 
 # Flask application
 app = Flask(__name__)
@@ -198,10 +312,157 @@ def initialize_models():
                 model = load_model("phi2", model_path=full_path)
                 manager.add_model(model_id, model)
                 initialized_models.append(model_id)
+                
+            elif model_type.lower() == 'rwkv':
+                model_path = model_config.get('path')
+                if not model_path:
+                    continue
+                
+                full_path = os.path.join(os.environ.get('MODEL_DIR', './models'), model_path)
+                model = load_model("rwkv", model_path=full_path)
+                manager.add_model(model_id, model)
+                initialized_models.append(model_id)
         except Exception as e:
             logger.error(f"Failed to initialize model {model_id}: {e}")
     
     return jsonify({"success": True, "models": initialized_models})
+
+@app.route('/api/add-llm', methods=['POST'])
+def add_llm_model():
+    """Add a new LLM model by URL"""
+    data = request.json
+    model_id = data.get('model_id')
+    model_type = data.get('model_type', 'llama').lower()
+    model_url = data.get('model_url')
+    
+    # Validate required parameters
+    if not model_id:
+        return jsonify({"error": "model_id is required"}), 400
+    if not model_url:
+        return jsonify({"error": "model_url is required"}), 400
+    
+    # Check if model_id already exists
+    if model_id in manager.models:
+        return jsonify({"error": f"Model ID '{model_id}' already exists"}), 400
+    
+    # Determine file name from URL or use provided name
+    file_name = data.get('file_name')
+    if not file_name:
+        file_name = model_url.split('/')[-1]
+        if not file_name or '?' in file_name:  # Handle URLs with query parameters
+            file_name = f"{model_id}.gguf"
+    
+    # Set save path
+    model_dir = os.environ.get('MODEL_DIR', './models')
+    save_path = os.path.join(model_dir, file_name)
+    
+    # Download the model
+    logger.info(f"Downloading model from {model_url} to {save_path}")
+    success = download_gguf_model(model_url, save_path)
+    
+    if not success:
+        return jsonify({"error": "Failed to download model"}), 500
+    
+    # Check if we should keep the model even if loading fails
+    keep_file = data.get('keep_file_on_error', False)
+    
+    # Check if we should only download without loading
+    download_only = data.get('download_only', False)
+    
+    # Analyze the model before loading
+    analysis = analyze_gguf_file(save_path)
+    
+    # Return early if download_only is True
+    if download_only:
+        return jsonify({
+            "success": True,
+            "message": "Model downloaded successfully but not loaded",
+            "model_id": model_id,
+            "file_path": save_path,
+            "analysis": analysis
+        })
+    
+    # Check if we need to adjust the model type based on analysis
+    if "detected_architecture" in analysis:
+        detected_arch = analysis["detected_architecture"]
+        if detected_arch != model_type and detected_arch in ["llama", "phi", "rwkv"]:
+            logger.info(f"Detected architecture '{detected_arch}' differs from specified type '{model_type}'")
+            
+            # Auto-correct if requested
+            if data.get('auto_correct_type', False):
+                if detected_arch == "phi":
+                    model_type = "phi2"
+                else:
+                    model_type = detected_arch
+                logger.info(f"Auto-corrected model type to '{model_type}'")
+    
+    # Load the model
+    try:
+        model = load_model(model_type, model_path=save_path)
+        manager.add_model(model_id, model)
+        
+        # Get model information
+        model_info = manager.model_info(model_id)
+        
+        return jsonify({
+            "success": True,
+            "model_id": model_id,
+            "file_path": save_path,
+            "model_info": model_info,
+            "analysis": analysis
+        })
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Failed to load model {model_id}: {error_msg}")
+        
+        # Clean up the downloaded file if loading fails, unless keep_file is True
+        if os.path.exists(save_path) and not keep_file:
+            logger.info(f"Removing incompatible model file: {save_path}")
+            os.remove(save_path)
+            file_status = "Model file was removed. Set 'keep_file_on_error' to true to keep downloaded files despite errors."
+        else:
+            file_status = f"Model file was kept at {save_path}"
+        
+        # Check for common compatibility issues
+        if "unknown model architecture" in error_msg:
+            suggestion = "This GGUF model appears to use a custom architecture not supported by llama.cpp."
+        elif "Failed to load model from file" in error_msg:
+            suggestion = "The model format might be incompatible with the selected model type."
+        else:
+            suggestion = "Check if the model is compatible with the selected model_type."
+            
+        return jsonify({
+            "error": f"Failed to load model: {error_msg}",
+            "file_status": file_status,
+            "suggestion": suggestion,
+            "supported_types": ["llama (for llama.cpp compatible GGUF files)", 
+                               "phi2 (for Phi-2 models)", 
+                               "rwkv (for RWKV models)"]
+        }), 500
+
+@app.route('/api/delete-llm/<model_id>', methods=['POST', 'DELETE'])
+def delete_llm_model(model_id):
+    """Delete an LLM model"""
+    if model_id not in manager.models:
+        return jsonify({"error": f"Model '{model_id}' not found"}), 404
+    
+    # Get model info before removing
+    try:
+        model_info = manager.model_info(model_id)
+    except:
+        model_info = {"id": model_id}
+    
+    # Remove the model from the manager
+    success = manager.remove_model(model_id)
+    
+    if success:
+        return jsonify({
+            "success": True,
+            "model_id": model_id,
+            "message": f"Model '{model_id}' successfully removed"
+        })
+    else:
+        return jsonify({"error": f"Failed to remove model '{model_id}'"}), 500
 
 @app.route('/api/models', methods=['GET'])
 def list_models():
@@ -274,6 +535,40 @@ def chat():
         })
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+@app.route('/api/analyze-model', methods=['POST'])
+def analyze_model():
+    """Analyze a model file to check compatibility before loading"""
+    data = request.json
+    model_path = data.get('model_path')
+    
+    if not model_path:
+        return jsonify({"error": "model_path is required"}), 400
+    
+    # Resolve path if relative
+    if not os.path.isabs(model_path):
+        model_path = os.path.join(os.environ.get('MODEL_DIR', './models'), model_path)
+    
+    # Check if file exists
+    if not os.path.exists(model_path):
+        return jsonify({"error": "Model file not found"}), 404
+    
+    # Analyze the file
+    analysis = analyze_gguf_file(model_path)
+    
+    # Add recommendations based on analysis
+    if "detected_architecture" in analysis:
+        arch = analysis["detected_architecture"]
+        if arch == "llama":
+            analysis["recommendation"] = "Use model_type: llama"
+        elif arch == "phi":
+            analysis["recommendation"] = "Use model_type: phi2"
+        elif arch == "rwkv":
+            analysis["recommendation"] = "Use model_type: rwkv"
+        else:
+            analysis["recommendation"] = f"Architecture '{arch}' detected, but might not be compatible with available model types"
+    
+    return jsonify(analysis)
 
 @app.route('/health', methods=['GET'])
 def health_check():
